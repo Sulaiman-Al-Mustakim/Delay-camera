@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delay Camera</title>
+<meta name="description" content="Record a video with a countdown delay. Free. Runs in your browser. Nothing is uploaded.">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #1a1d24; --btn: #2a2f3a; --text: #f3f4f6; --muted: #9aa3b2;
+    --red: #e5383b; --yellow: #f5b82e; --green: #2e9e5b; --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { position: relative; height: 100dvh; max-width: 1200px; margin: 0 auto; padding: 12px;
+         display: flex; flex-direction: column; gap: 10px; background: var(--bg); }
+  .top { display: flex; align-items: center; justify-content: space-between; }
+  h1 { font-size: 18px; margin: 0; }
+  .pill { font-size: 12px; background: var(--panel); padding: 4px 10px; border-radius: 999px; color: var(--muted); }
+
+  .stage { position: relative; flex: 1; min-height: 200px; background: #000; border-radius: var(--radius); overflow: hidden; }
+  .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #preview.mirror { transform: scaleX(-1); }
+
+  #count { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+           font-size: min(45vh, 320px); font-weight: 700; background: rgba(0,0,0,.4); text-shadow: 0 0 24px #000; }
+  #badge { position: absolute; top: 12px; left: 12px; display: flex; align-items: center; gap: 8px;
+           background: rgba(0,0,0,.65); padding: 6px 12px; border-radius: 999px; font-variant-numeric: tabular-nums; }
+  #badge i { width: 12px; height: 12px; border-radius: 50%; background: var(--red); animation: blink 1s infinite; }
+  #badge.paused i { background: var(--yellow); animation: none; }
+  @keyframes blink { 50% { opacity: .2; } }
+
+  #meterBox { position: absolute; top: 12px; right: 12px; width: 8px; height: 80px; background: rgba(255,255,255,.2);
+              border-radius: 4px; overflow: hidden; display: flex; align-items: flex-end; }
+  #meterFill { width: 100%; height: 0; background: var(--green); transition: height .06s linear; }
+
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+             justify-content: center; gap: 16px; padding: 24px; text-align: center; background: rgba(0,0,0,.85); }
+  #overlay p { max-width: 520px; margin: 0; line-height: 1.5; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+  .btn { min-height: 44px; padding: 10px 22px; font-size: 16px; border: 0; border-radius: 10px;
+         background: var(--btn); color: var(--text); cursor: pointer; font-family: inherit; }
+  .btn:hover { filter: brightness(1.15); }
+  .btn:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 3px solid #6ea8fe; outline-offset: 2px; }
+  .btn.red { background: var(--red); font-weight: 600; }
+  .btn.yellow { background: var(--yellow); color: #111; font-weight: 600; }
+  .btn.green { background: var(--green); font-weight: 600; }
+
+  #status { margin: 0; text-align: center; color: var(--muted); font-size: 14px; min-height: 20px; }
+
+  details { background: var(--panel); border-radius: var(--radius); padding: 10px 14px; }
+  summary { cursor: pointer; font-weight: 600; }
+  fieldset { border: 0; padding: 0; margin: 12px 0 0; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+  fieldset:disabled { opacity: .5; }
+  label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--muted); }
+  label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
+  select { padding: 10px; font-size: 15px; border-radius: 8px; border: 1px solid #333a47; background: var(--btn); color: var(--text); }
+  .note { margin: 0; text-align: center; font-size: 12px; color: var(--muted); }
+
+  /* Full screen mode */
+  #app.is-fs { max-width: none; padding: 0; gap: 0; background: #000; }
+  #app.is-fs .stage { border-radius: 0; }
+  #app.is-fs .top, #app.is-fs #status, #app.is-fs details, #app.is-fs .note { display: none; }
+  #app.is-fs .controls { position: absolute; left: 0; right: 0; bottom: 16px; z-index: 5; }
+</style>
+</head>
+<body>
+<div id="app" data-state="starting">
+  <header class="top">
+    <h1>Delay Camera</h1>
+    <span id="format" class="pill">Checking...</span>
+  </header>
+
+  <main class="stage">
+    <video id="preview" autoplay muted playsinline></video>
+    <video id="review" controls playsinline hidden></video>
+    <div id="count" aria-live="assertive" hidden></div>
+    <div id="badge" hidden><i></i><span id="clock">00:00</span></div>
+    <div id="meterBox" title="Microphone level"><div id="meterFill"></div></div>
+    <div id="overlay" hidden><p id="overlayText"></p><button id="retry" class="btn">Try again</button></div>
+  </main>
+
+  <section class="controls">
+    <button id="record" class="btn red" hidden>Record</button>
+    <button id="cancel" class="btn" hidden>Cancel (Esc)</button>
+    <button id="pause" class="btn yellow" hidden>Pause (P)</button>
+    <button id="stop" class="btn" hidden>Stop</button>
+    <button id="download" class="btn green" hidden>Download</button>
+    <button id="again" class="btn" hidden>Record again</button>
+    <button id="fs" class="btn">Full screen (F)</button>
+  </section>
+
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <details id="settings">
+    <summary>Settings</summary>
+    <fieldset id="fields">
+      <label>Delay before recording
+        <select id="delay">
+          <option value="0">No delay</option>
+          <option value="3">3 seconds</option>
+          <option value="5" selected>5 seconds</option>
+          <option value="10">10 seconds</option>
+          <option value="15">15 seconds</option>
+        </select>
+      </label>
+      <label>Video quality
+        <select id="quality">
+          <option value="720" selected>720p (smaller file)</option>
+          <option value="1080">1080p (sharper)</option>
+        </select>
+      </label>
+      <label>Camera <select id="cam"></select></label>
+      <label>Microphone <select id="mic"></select></label>
+      <label class="check"><input type="checkbox" id="mirror" checked> Mirror the preview</label>
+      <label class="check"><input type="checkbox" id="beep" checked> Beep during countdown</label>
+    </fieldset>
+  </details>
+
+  <p class="note">Nothing is uploaded. Your video stays on your computer. The saved video is not mirrored.</p>
+</div>
+
+<noscript>Please turn on JavaScript to use this page.</noscript>
+
+<script>
+(() => {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const app = $('app'), preview = $('preview'), review = $('review');
+  const countBox = $('count'), badge = $('badge'), clock = $('clock');
+  const meterBox = $('meterBox'), meterFill = $('meterFill');
+  const overlay = $('overlay'), overlayText = $('overlayText');
+  const statusEl = $('status'), formatEl = $('format'), fields = $('fields');
+  const btn = { record: $('record'), cancel: $('cancel'), pause: $('pause'), stop: $('stop'),
+                download: $('download'), again: $('again'), fs: $('fs'), retry: $('retry') };
+  const sel = { delay: $('delay'), quality: $('quality'), cam: $('cam'), mic: $('mic') };
+  const chk = { mirror: $('mirror'), beep: $('beep') };
+
+  const QUALITY = {
+    '720':  { w: 1280, h: 720,  bps: 5000000 },
+    '1080': { w: 1920, h: 1080, bps: 8000000 }
+  };
+  const MIME_LIST = [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=avc1,mp4a.40.2',
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm'
+  ];
+  const STORE_KEY = 'delay-camera-settings-v1';
+
+  let state = 'starting';
+  let stream = null, recorder = null, chunks = [], mime = '';
+  let startToken = 0;
+  let countdownTimer = null, countdownResolve = null;
+  let clockTimer = null, startedAt = 0, accumulated = 0, running = false, lastDuration = 0;
+  let savedBlob = null, blobUrl = null, savedExt = 'webm', downloaded = true;
+  let audioCtx = null, analyser = null, sourceNode = null, meterRaf = 0;
+  let wakeLock = null;
+
+  /* ---------- small helpers ---------- */
+  function status(text) { statusEl.textContent = text; }
+  function pad(n) { return String(n).padStart(2, '0'); }
+  function fmtDuration(ms) {
+    const s = Math.floor(ms / 1000);
+    return pad(Math.floor(s / 60)) + ':' + pad(s % 60);
+  }
+  function fmtSize(bytes) {
+    return bytes > 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(bytes / 1024)) + ' KB';
+  }
+  function stamp() {
+    const d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + '_' +
+           pad(d.getHours()) + '-' + pad(d.getMinutes()) + '-' + pad(d.getSeconds());
+  }
+  function pickMime() {
+    if (!window.MediaRecorder) return '';
+    return MIME_LIST.find((t) => MediaRecorder.isTypeSupported(t)) || '';
+  }
+
+  /* ---------- saved settings ---------- */
+  function loadPrefs() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch (e) { return {}; }
+  }
+  function savePrefs() {
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        delay: sel.delay.value, quality: sel.quality.value,
+        mirror: chk.mirror.checked, beep: chk.beep.checked,
+        camId: sel.cam.value, micId: sel.mic.value
+      }));
+    } catch (e) { /* storage can be blocked. That is fine. */ }
+  }
+  const prefs = loadPrefs();
+  function setIfValid(select, value) {
+    if (value !== undefined && Array.from(select.options).some((o) => o.value === value)) select.value = value;
+  }
+  setIfValid(sel.delay, prefs.delay);
+  setIfValid(sel.quality, prefs.quality);
+  if (typeof prefs.mirror === 'boolean') chk.mirror.checked = prefs.mirror;
+  if (typeof prefs.beep === 'boolean') chk.beep.checked = prefs.beep;
+  preview.classList.toggle('mirror', chk.mirror.checked);
+
+  /* ---------- screen state ---------- */
+  function setState(s) {
+    state = s;
+    app.dataset.state = s;
+    const busy = s === 'recording' || s === 'paused';
+    btn.record.hidden = s !== 'idle';
+    btn.cancel.hidden = s !== 'countdown';
+    btn.pause.hidden = !busy;
+    btn.stop.hidden = !busy;
+    btn.download.hidden = s !== 'review';
+    btn.again.hidden = s !== 'review';
+    preview.hidden = s === 'review';
+    review.hidden = s !== 'review';
+    badge.hidden = !busy;
+    badge.classList.toggle('paused', s === 'paused');
+    meterBox.hidden = s === 'review' || s === 'error';
+    overlay.hidden = s !== 'error';
+    fields.disabled = s !== 'idle';
+    btn.pause.textContent = s === 'paused' ? 'Resume (P)' : 'Pause (P)';
+  }
+
+  function fail(message) {
+    stopStream();
+    overlayText.textContent = message;
+    setState('error');
+    status('');
+  }
+
+  function explain(err) {
+    switch (err && err.name) {
+      case 'NotAllowedError':
+      case 'SecurityError':
+        return 'The camera or microphone is blocked. Click the lock or camera icon near the web address, allow both, then press Try again.';
+      case 'NotFoundError':
+        return 'No camera or microphone was found. Plug one in, then press Try again.';
+      case 'NotReadableError':
+      case 'AbortError':
+        return 'Your camera is busy. Close other apps that use it (Zoom, Teams, Camera), then press Try again.';
+      default:
+        return 'The camera could not start. ' + (err && err.message ? err.message : '') + ' Press Try again.';
+    }
+  }
+
+  /* ---------- camera ---------- */
+  function stopStream() {
+    teardownMeter();
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+    preview.srcObject = null;
+  }
+
+  async function startStream() {
+    const token = ++startToken;
+    setState('starting');
+    status('Starting camera...');
+    stopStream();
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return fail('This page cannot use the camera here. Open it with https:// or as a file on your computer.');
+    }
+    if (!window.MediaRecorder) {
+      return fail('This browser cannot record video. Please use Chrome, Edge, or Safari.');
+    }
+
+    const q = QUALITY[sel.quality.value];
+    const camId = sel.cam.value || prefs.camId;
+    const micId = sel.mic.value || prefs.micId;
+    const build = (useIds) => ({
+      video: Object.assign({ width: { ideal: q.w }, height: { ideal: q.h } },
+                           useIds && camId ? { deviceId: { exact: camId } } : {}),
+      audio: Object.assign({ echoCancellation: true, noiseSuppression: true },
+                           useIds && micId ? { deviceId: { exact: micId } } : {})
+    });
+
+    let s;
+    try {
+      s = await navigator.mediaDevices.getUserMedia(build(true));
+    } catch (e) {
+      if (e.name === 'OverconstrainedError' || e.name === 'NotFoundError') {
+        try { s = await navigator.mediaDevices.getUserMedia(build(false)); }
+        catch (e2) { return token === startToken ? fail(explain(e2)) : undefined; }
+      } else {
+        return token === startToken ? fail(explain(e)) : undefined;
+      }
+    }
+
+    if (token !== startToken) { s.getTracks().forEach((t) => t.stop()); return; }
+
+    stream = s;
+    preview.srcObject = stream;
+    stream.getVideoTracks().forEach((t) => t.addEventListener('ended', onCameraLost));
+    await fillDevices();
+    setupMeter();
+    setState('idle');
+    status('Ready. Press Record.');
+  }
+
+  function onCameraLost() {
+    if (state === 'recording' || state === 'paused') {
+      stopRecording();
+      status('The camera stopped. Your video was saved up to that point.');
+    } else {
+      fail('The camera was disconnected. Plug it in again, then press Try again.');
+    }
+  }
+
+  async function fillDevices() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const camNow = stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings().deviceId;
+      const micNow = stream.getAudioTracks()[0] && stream.getAudioTracks()[0].getSettings().deviceId;
+      fillSelect(sel.cam, devices.filter((d) => d.kind === 'videoinput'), camNow, 'Camera');
+      fillSelect(sel.mic, devices.filter((d) => d.kind === 'audioinput'), micNow, 'Microphone');
+    } catch (e) { /* the lists stay empty. Recording still works. */ }
+  }
+  function fillSelect(select, list, current, label) {
+    select.innerHTML = '';
+    list.forEach((d, i) => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || (label + ' ' + (i + 1));
+      select.appendChild(o);
+    });
+    if (current) select.value = current;
+  }
+
+  /* ---------- microphone level ---------- */
+  function setupMeter() {
+    teardownMeter();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC || !stream || !stream.getAudioTracks().length) return;
+    try {
+      audioCtx = audioCtx || new AC();
+      sourceNode = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 512;
+      sourceNode.connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      const loop = () => {
+        analyser.getByteTimeDomainData(data);
+        let peak = 0;
+        for (let i = 0; i < data.length; i++) {
+          const d = Math.abs(data[i] - 128) / 128;
+          if (d > peak) peak = d;
+        }
+        meterFill.style.height = Math.min(100, Math.round(peak * 140)) + '%';
+        meterRaf = requestAnimationFrame(loop);
+      };
+      loop();
+    } catch (e) { /* the meter is only a bonus */ }
+  }
+  function teardownMeter() {
+    cancelAnimationFrame(meterRaf);
+    try { if (sourceNode) sourceNode.disconnect(); } catch (e) {}
+    sourceNode = null; analyser = null;
+    meterFill.style.height = '0';
+  }
+  function wakeAudio() {
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  }
+  function beep() {
+    if (!chk.beep.checked || !audioCtx) return;
+    try {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = 660; g.gain.value = 0.08;
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(); o.stop(audioCtx.currentTime + 0.12);
+    } catch (e) {}
+  }
+
+  /* ---------- countdown ---------- */
+  function runCountdown(seconds) {
+    return new Promise((resolve) => {
+      if (seconds <= 0) { resolve(true); return; }
+      countdownResolve = resolve;
+      let n = seconds;
+      countBox.textContent = n; countBox.hidden = false; beep();
+      countdownTimer = setInterval(() => {
+        n--;
+        if (n > 0) { countBox.textContent = n; beep(); }
+        else { clearInterval(countdownTimer); countBox.hidden = true; countdownResolve = null; resolve(true); }
+      }, 1000);
+    });
+  }
+  function cancelCountdown() {
+    if (state !== 'countdown') return;
+    clearInterval(countdownTimer);
+    countBox.hidden = true;
+    if (countdownResolve) { countdownResolve(false); countdownResolve = null; }
+  }
+
+  /* ---------- recording ---------- */
+  async function onRecord() {
+    wakeAudio();
+    if (state !== 'idle') return;
+    setState('countdown');
+    status('Get ready...');
+    const ok = await runCountdown(parseInt(sel.delay.value, 10));
+    if (!ok) { setState('idle'); status('Cancelled. Ready.'); return; }
+    startRecording();
+  }
+
+  function elapsed() { return accumulated + (running ? Date.now() - startedAt : 0); }
+  function updateClock() { clock.textContent = fmtDuration(elapsed()); }
+
+  function startRecording() {
+    if (!stream) { setState('idle'); return; }
+    chunks = [];
+    mime = pickMime();
+    const q = QUALITY[sel.quality.value];
+    const opts = { videoBitsPerSecond: q.bps, audioBitsPerSecond: 128000 };
+    if (mime) opts.mimeType = mime;
+    try {
+      recorder = new MediaRecorder(stream, opts);
+    } catch (e) {
+      try { recorder = new MediaRecorder(stream); }
+      catch (e2) { setState('idle'); status('Recording could not start: ' + e2.message); return; }
+    }
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    recorder.onerror = () => { status('A recording error happened. Please stop and try again.'); };
+    recorder.onstop = finishRecording;
+    recorder.start(1000);
+    accumulated = 0; startedAt = Date.now(); running = true;
+    clearInterval(clockTimer);
+    clockTimer = setInterval(updateClock, 250);
+    updateClock();
+    lockScreen();
+    setState('recording');
+    status('Recording...');
+  }
+
+  function togglePause() {
+    if (!recorder) return;
+    if (recorder.state === 'recording') {
+      recorder.pause();
+      accumulated += Date.now() - startedAt; running = false;
+      setState('paused');
+      status('Paused. Press Resume to continue.');
+    } else if (recorder.state === 'paused') {
+      recorder.resume();
+      startedAt = Date.now(); running = true;
+      setState('recording');
+      status('Recording...');
+    }
+  }
+
+  function stopRecording() {
+    if (!recorder || recorder.state === 'inactive') return;
+    if (running) { accumulated += Date.now() - startedAt; running = false; }
+    clearInterval(clockTimer);
+    lastDuration = accumulated;
+    recorder.stop();
+  }
+
+  function finishRecording() {
+    unlockScreen();
+    const type = ((recorder && recorder.mimeType) || mime || 'video/webm').split(';')[0];
+    savedExt = type.indexOf('mp4') !== -1 ? 'mp4' : 'webm';
+    const blob = new Blob(chunks, { type: type });
+    chunks = [];
+    if (!blob.size) { setState('idle'); status('Nothing was recorded. Please try again.'); return; }
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    savedBlob = blob;
+    blobUrl = URL.createObjectURL(blob);
+    review.src = blobUrl;
+    downloaded = false;
+    setState('review');
+    status('Done. ' + fmtDuration(lastDuration) + ' long, ' + fmtSize(blob.size) + ', ' +
+           savedExt.toUpperCase() + '. Watch it, then press Download.');
+  }
+
+  function download() {
+    if (!savedBlob) return;
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = 'delay-camera-' + stamp() + '.' + savedExt;
+    document.body.appendChild(a); a.click(); a.remove();
+    downloaded = true;
+    status('Download started. Check your Downloads folder.');
+  }
+
+  function recordAgain() {
+    if (!downloaded && !confirm('You have not downloaded this video yet. Delete it and record again?')) return;
+    review.pause();
+    review.removeAttribute('src'); review.load();
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    blobUrl = null; savedBlob = null; downloaded = true;
+    setState('idle');
+    status('Ready. Press Record.');
+  }
+
+  /* ---------- keep the screen awake while recording ---------- */
+  async function lockScreen() {
+    try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+  function unlockScreen() {
+    try { if (wakeLock) wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+  }
+
+  /* ---------- full screen ---------- */
+  function toggleFullscreen() {
+    const current = document.fullscreenElement || document.webkitFullscreenElement;
+    if (current) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      return;
+    }
+    const request = app.requestFullscreen || app.webkitRequestFullscreen;
+    if (!request) { status('Full screen is not supported in this browser.'); return; }
+    Promise.resolve(request.call(app)).catch((e) => status('Full screen did not work: ' + e.message));
+  }
+  function onFullscreenChange() {
+    const on = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    app.classList.toggle('is-fs', on);
+    btn.fs.textContent = on ? 'Exit full screen (F)' : 'Full screen (F)';
+  }
+  document.addEventListener('fullscreenchange', onFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+  /* ---------- wiring ---------- */
+  btn.record.addEventListener('click', onRecord);
+  btn.cancel.addEventListener('click', cancelCountdown);
+  btn.pause.addEventListener('click', togglePause);
+  btn.stop.addEventListener('click', stopRecording);
+  btn.download.addEventListener('click', download);
+  btn.again.addEventListener('click', recordAgain);
+  btn.fs.addEventListener('click', toggleFullscreen);
+  btn.retry.addEventListener('click', startStream);
+
+  sel.delay.addEventListener('change', savePrefs);
+  chk.beep.addEventListener('change', savePrefs);
+  chk.mirror.addEventListener('change', () => {
+    preview.classList.toggle('mirror', chk.mirror.checked);
+    savePrefs();
+  });
+  [sel.quality, sel.cam, sel.mic].forEach((s) => s.addEventListener('change', () => { savePrefs(); startStream(); }));
+
+  document.addEventListener('pointerdown', wakeAudio);
+  document.addEventListener('keydown', (e) => {
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === 'f') toggleFullscreen();
+    else if (k === 'p' && (state === 'recording' || state === 'paused')) togglePause();
+    else if (k === 'escape') cancelCountdown();
+  });
+
+  window.addEventListener('beforeunload', (e) => {
+    if (state === 'recording' || state === 'paused' || (state === 'review' && !downloaded)) {
+      e.preventDefault(); e.returnValue = '';
+    }
+  });
+  window.addEventListener('pagehide', stopStream);
+
+  /* ---------- start ---------- */
+  const best = pickMime();
+  formatEl.textContent = !window.MediaRecorder ? 'Recording not supported'
+                       : best.indexOf('mp4') !== -1 ? 'Saves as MP4'
+                       : best ? 'Saves as WEBM' : 'Format unknown';
+  startStream();
+})();
+</script>
+</body>
+</html>
